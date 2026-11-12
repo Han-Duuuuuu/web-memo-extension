@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>本地文件设置 · 网页备忘录</title>
+<style>
+body{font:16px/1.8 "Segoe UI","Microsoft YaHei",sans-serif;background:#f4f6f8;color:#243041;margin:0;padding:40px 20px}main{max-width:740px;margin:auto;background:white;padding:32px;border:1px solid #dde3eb;border-radius:12px}h1{font-size:25px;margin:0 0 16px}h2{font-size:18px;margin-top:28px}input{width:340px;max-width:90%;font:15px monospace;padding:8px;border:1px solid #b6c1d0;border-radius:5px}button{font:inherit;padding:7px 12px;margin:5px;border:1px solid #a4b2c7;border-radius:5px;background:white;cursor:pointer}#test{color:white;background:#315ed4;border-color:#315ed4}#status{white-space:pre-wrap;padding:12px;background:#eef2fa;border-radius:6px}li{margin-bottom:8px}p{margin-bottom:12px}.muted{color:#57687d}
+</style></head><body><main>
+<h1>本地文件设置</h1>
+<p>配置一次，以后即可从网页备忘录打开或拖出本地文件和文件夹。此助手适用于 Windows 10 / 11。</p>
+<ol><li>在新压缩包中找到“本地文件助手”文件夹，双击 <b>Install.cmd</b>。</li>
+<li>复制下面的扩展 ID，粘贴到安装窗口并按回车，等待出现“Installation complete”。</li>
+<li>点击“检查连接”，确认助手版本为 1.5.0。连接成功后，刷新目标网页（包括 GPT 页面）再打开备忘录，将项目拖到备忘录虚线区域，出现本地接收框后再松开鼠标。</li></ol>
+<label for="extension-id">当前扩展 ID</label><br><input id="extension-id" readonly><button id="copy">复制 ID</button><button id="test">检查连接</button>
+<p id="status" role="status">等待检查</p>
+<h2>笔记与附件数据保存在 D 盘</h2>
+<p>备忘录文字和附件列表保存到 <b>D:\网页备忘录数据\Memos</b>。检查连接或首次打开备忘录时，会将浏览器中的旧记录逐条迁移；写入成功后才移除浏览器旧记录。D 盘不可用时会提示失败，不回退到 C 盘。笔记和附件功能均需要本地助手连接。</p>
+<h2>关联后的使用方式</h2>
+<p>单击附件名称打开；按住名称并拖动，保持按住鼠标，待文件拖放准备完成后拖到网页上传区、资源管理器或其他接收文件的窗口。如果松开太快，可点击附件下方的“拖出”，从本地窗口中的名称重新拖动。拖出 ZIP 行得到原 ZIP；展开后的文件拖出的是解压副本。</p>
+<p>拖入文件、文件夹或 ZIP。ZIP 自动解压并展开，里面的文件可直接打开，子文件夹可以继续展开。点击“改名”修改本地原项目名称；压缩包内的项目修改的是解压副本，不改变原压缩包。“移除”只解除此页关联。</p>
+<p class="muted">这里保存的是位置关联。请保持文件原来的位置；通过备忘录改名时会自动更新关联；从资源管理器移动或改名后，需要重新添加。扩展自身不会上传文件内容；将附件拖入其他网站的上传区后，由目标网站处理上传。拖出只提供复制，原文件保留。</p>
+<p class="muted">如更换扩展 ID，请重新运行 Install.cmd。卸载本地助手可运行同一文件夹中的 Uninstall.cmd；卸载不会删除你的文献和补充文件。</p>
+</main><script src="options.js"></script></body></html>
