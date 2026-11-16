@@ -5,13 +5,35 @@
   const drags = new Map();
   let renameQueue = Promise.resolve();
   async function nativeRequest(message) {
+    if (message.action === "memoData") return dataRequest(message);
     try { return await chrome.runtime.sendNativeMessage(HOST, message); }
     catch (error) {
       console.warn("本地文件助手未连接", error);
       return { ok: false, code: "HOST_UNAVAILABLE", error: "本地文件助手未连接，请先点击“本地文件设置”完成安装。" };
     }
   }
-  let dataQueue = Promise.resolve(), migrated = false;
+  function dataRequest(message) {
+    return new Promise(resolve => {
+      let port, timer, finished = false;
+      function finish(result) {
+        if (finished) return;
+        finished = true; clearTimeout(timer);
+        if (port) { try { port.disconnect(); } catch {} }
+        resolve(result);
+      }
+      timer = setTimeout(() => finish({ok:false,error:"本地数据请求超过 20 秒未完成，请点击“重试读取”。"}), 20000);
+      try {
+        port = chrome.runtime.connectNative(HOST);
+        port.onMessage.addListener(finish);
+        port.onDisconnect.addListener(() => {
+          const error = chrome.runtime.lastError;
+          finish({ok:false,error:error?.message || "本地助手未返回数据，请重试读取。"});
+        });
+        port.postMessage(message);
+      } catch (error) { finish({ok:false,error:error.message || "本地助手连接失败。"}); }
+    });
+  }
+  let dataQueue = Promise.resolve();
   function dataTask(task) {
     const result = dataQueue.catch(() => {}).then(task);
     dataQueue = result; return result;
@@ -22,16 +44,14 @@
     if (!result?.ok) throw new Error(result?.error || "D 盘保存失败，请更新本地助手。");
     return result;
   }
-  async function migrate() {
-    if (migrated) return;
+  async function migrate(keys = null) {
     // 每条记录写入成功后才移除浏览器旧记录；中断后可继续，磁盘已有数据优先。
-    const old = await chrome.storage.local.get(null);
+    const old = await chrome.storage.local.get(keys);
     for (const [key,value] of Object.entries(old)) {
       if (!validKey(key)) continue;
       await disk("import", {key,value});
       await chrome.storage.local.remove(key);
     }
-    migrated = true;
   }
   async function notify(values) {
     const tabs = await chrome.tabs.query({});
@@ -100,21 +120,26 @@
       chrome.runtime.openOptionsPage().then(() => reply({ok:true}), () => reply({ok:false})); return true;
     }
     if (["MEMO_DATA_READ","MEMO_DATA_WRITE"].includes(message.type)) {
-      dataTask(async () => {
-        await migrate();
+      const task = async () => {
         if (message.type === "MEMO_DATA_READ") {
           if (!Array.isArray(message.keys) || message.keys.length > 2 || !message.keys.every(validKey)) throw new Error("存储键无效");
+          // 普通页面只迁移所需记录，不等待其他网页或全库迁移。
+          await migrate(message.keys.length ? message.keys : null);
+          if (!message.keys.length) await disk("keys",{offset:0});
           const values = {};
           for (const key of message.keys) { const r = await disk("get",{key}); if (r.exists) values[key] = r.value; }
           return {ok:true,values};
         }
         const pairs = Object.entries(message.values || {});
         if (pairs.length !== 1 || !validKey(pairs[0][0])) throw new Error("存储内容无效");
+        await migrate(pairs.map(([key]) => key));
         for (const [key,value] of pairs) await disk("set",{key,value});
         // 通知失败不改变已经落盘的保存结果。
         try { await notify(message.values); } catch {}
         return {ok:true};
-      }).then(reply,error=>reply({ok:false,error:error.message})); return true;
+      };
+      // 读取不排在其他标签页的保存/全库改名后面。写入和改名仍按顺序执行。
+      (message.type === "MEMO_DATA_READ" ? task() : dataTask(task)).then(reply,error=>reply({ok:false,error:error.message})); return true;
     }
     if (message.type !== "MEMO_LOCAL_REQUEST") return;
     const action = message.action;

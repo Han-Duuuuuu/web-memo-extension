@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "网页备忘录",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "description": "网页备忘录：关联本地附件、拖出真实文件、快速改名和 ZIP 自动解压。",
   "permissions": [
     "contextMenus",

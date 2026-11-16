@@ -8,6 +8,7 @@
   const filesKey = "wb_memo_attachments_" + pageKey;
   let host, panel, ui, textarea, statusEl, filesStatus, list;
   let entries = [], initialized = false, loading = null, saveQueue = Promise.resolve();
+  let filesInitialized = false;
   let busy = false;
   let dropPending = false;
   let dragOutPending = false, dragOutMode = "";
@@ -29,7 +30,7 @@
     if (e.dataTransfer) e.dataTransfer.dropEffect = busy && !dropPending ? "none" : "copy";
     zone.toggleAttribute("data-drag", e.type !== "drop");
     // 有些页面/覆盖层不产生可用的 dragenter，dragover 同样可以启动接收框。
-    if (!busy && initialized) addEntries("drop", {placement:"cursor"});
+    if (!busy && initialized && filesInitialized) addEntries("drop", {placement:"cursor"});
     if (e.type === "drop") fileStatus("请拖到出现的本地接收框再松开；若已松开，请重新拖一次，或先点击虚线区域。");
   }
   for (const type of ["dragenter", "dragover", "dragleave", "drop"]) window.addEventListener(type, memoFileDrag, {capture:true, passive:false});
@@ -51,7 +52,14 @@
     } catch (error) { throw new Error(error.message || "连接失败，请刷新页面重试。"); }
   }
   async function memoGet(keys) {
-    const result = await chrome.runtime.sendMessage({type:"MEMO_DATA_READ",keys});
+    let timer;
+    let result;
+    try {
+      result = await Promise.race([
+        chrome.runtime.sendMessage({type:"MEMO_DATA_READ",keys}),
+        new Promise((_,reject) => { timer = setTimeout(() => reject(new Error("读取等待超时，请点击“重试读取”。")), 30000); })
+      ]);
+    } finally { clearTimeout(timer); }
     if (!result?.ok) throw new Error(result?.error || "D 盘数据读取失败，请更新本地助手。");
     return result.values;
   }
@@ -130,7 +138,7 @@
   }
   function setBusy(value) {
     busy = value;
-    ui.querySelectorAll(".wb-files-tools button[data-add], .wb-files-list button").forEach(b => { b.disabled = value || !initialized; });
+    ui.querySelectorAll(".wb-files-tools button[data-add], .wb-files-list button").forEach(b => { b.disabled = value || !initialized || !filesInitialized; });
   }
   function bindDragSource(name, entry) {
     let gesture = null, suppressClick = false;
@@ -165,7 +173,7 @@
     finally { dragOutPending = false; dragOutMode = ""; setBusy(false); }
   }
   async function addEntries(action, extra = {}) {
-    if (busy || !initialized) return;
+    if (busy || !initialized || !filesInitialized) return;
     setBusy(true);
     dropPending = action === "drop";
     fileStatus(dropPending ? "正在打开本地接收框，请先保持拖动，出现接收框后再松开。" : "请在系统窗口中选择…");
@@ -284,6 +292,8 @@
     document.documentElement.append(host);
     textarea = ui.querySelector("textarea"); statusEl = ui.querySelector("#wb-memo-status");
     filesStatus = ui.querySelector(".wb-files-status"); list = ui.querySelector(".wb-files-list");
+    const retry = button("重试读取", () => open()); retry.id = "wb-memo-retry";
+    ui.querySelector(".wb-memo-actions").prepend(retry);
     const tools = ui.querySelector(".wb-files-tools");
     for (const [label, action] of [["＋ 添加文件", "chooseFiles"], ["＋ 添加文件夹", "chooseFolder"]]) {
       const b = button(label, () => addEntries(action)); b.dataset.add = "true"; tools.append(b);
@@ -310,7 +320,7 @@
     });
     for (const event of ["pointerup", "lostpointercapture"]) ui.querySelector(".wb-memo-header").addEventListener(event, () => { drag = null; });
     const zone = ui.querySelector(".wb-drop-zone");
-    function beginDrop(placement) { if (!busy && initialized) addEntries("drop", {placement}); }
+    function beginDrop(placement) { if (!busy && initialized && filesInitialized) addEntries("drop", {placement}); }
     zone.addEventListener("click", e => { if (e.isTrusted) beginDrop("center"); });
     zone.addEventListener("keydown", e => { if (e.isTrusted && ["Enter", " "].includes(e.key)) { e.preventDefault(); beginDrop("center"); } });
     document.addEventListener("visibilitychange", () => { if (document.hidden) cancelDrop(); });
@@ -329,30 +339,46 @@
   async function open() {
     if (!panel) buildPanel();
     host.style.setProperty("display", "block", "important");
-    if (!initialized && !loading) {
-      textarea.disabled = true;
-      ui.querySelector("#wb-memo-clear").disabled = true;
-      ui.querySelector("#wb-memo-save").disabled = true;
-      loading = (async () => {
+    if (loading) return;
+    if (!initialized || !filesInitialized) {
+      const retry = ui.querySelector("#wb-memo-retry");
+      retry.disabled = true; retry.textContent = "正在读取…";
+      async function readText() {
+        if (initialized) return;
+        textarea.disabled = true;
+        ui.querySelector("#wb-memo-clear").disabled = true;
+        ui.querySelector("#wb-memo-save").disabled = true;
+        statusEl.textContent = "正在读取 D 盘文字…";
         try {
-          const result = await memoGet([storageKey, filesKey]);
+          const result = await memoGet([storageKey]);
           textarea.value = typeof result[storageKey] === "string" ? result[storageKey] : "";
-          entries = Array.isArray(result[filesKey]) ? result[filesKey].filter(e => e && /^[a-f0-9]{32}$/.test(e.id) && typeof e.path === "string" && typeof e.name === "string" && ["file", "folder"].includes(e.kind)) : [];
-          initialized = true; statusEl.textContent = textarea.value ? "已保存到 D 盘" : "输入自动保存到 D 盘"; renderFiles();
+          initialized = true; statusEl.textContent = textarea.value ? "已保存到 D 盘" : "输入自动保存到 D 盘";
         } catch (error) { statusEl.textContent = "读取失败：" + error.message; }
         finally {
           textarea.disabled = !initialized;
           ui.querySelector("#wb-memo-clear").disabled = !initialized;
           ui.querySelector("#wb-memo-save").disabled = !initialized;
-          setBusy(false);
         }
-      })();
+      }
+      async function readFiles() {
+        if (filesInitialized) return;
+        fileStatus("正在读取附件列表…");
+        try {
+          const result = await memoGet([filesKey]);
+          entries = Array.isArray(result[filesKey]) ? result[filesKey].filter(e => e && /^[a-f0-9]{32}$/.test(e.id) && typeof e.path === "string" && typeof e.name === "string" && ["file", "folder"].includes(e.kind)) : [];
+          filesInitialized = true; renderFiles(); fileStatus("附件列表已读取。");
+        } catch (error) { fileStatus("附件读取失败：" + error.message,true); }
+        finally { setBusy(busy); }
+      }
+      loading = Promise.all([readText(),readFiles()]);
+      try { await loading; }
+      finally { loading = null; retry.disabled = false; retry.textContent = "重试读取"; setBusy(busy); }
     }
-    await loading; loading = null;
-    if (initialized) { textarea.focus(); refreshEntries(); }
+    if (initialized) textarea.focus();
+    if (filesInitialized) refreshEntries();
   }
   chrome.runtime.onMessage.addListener((msg, sender, reply) => {
-    if (msg?.type === "MEMO_DATA_CHANGED" && initialized && Object.hasOwn(msg.values || {},filesKey)) {
+    if (msg?.type === "MEMO_DATA_CHANGED" && filesInitialized && Object.hasOwn(msg.values || {},filesKey)) {
       entries = msg.values[filesKey] || []; renderFiles(); return;
     }
     if (msg?.type === "MEMO_DROP_READY") { fileStatus("本地接收框已打开，请拖到接收框中松开鼠标。"); return; }
