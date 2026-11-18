@@ -7,7 +7,8 @@
   const storageKey = "wb_memo_" + pageKey;
   const filesKey = "wb_memo_attachments_" + pageKey;
   let host, panel, ui, textarea, statusEl, filesStatus, list;
-  let entries = [], initialized = false, loading = null, saveQueue = Promise.resolve();
+  let entries = [], initialized = false, loading = null;
+  let saving = false, saveRequested = false;
   let filesInitialized = false;
   let busy = false;
   let dropPending = false;
@@ -51,20 +52,22 @@
       return res;
     } catch (error) { throw new Error(error.message || "连接失败，请刷新页面重试。"); }
   }
-  async function memoGet(keys) {
+  async function memoMessage(message, timeoutMessage) {
     let timer;
-    let result;
     try {
-      result = await Promise.race([
-        chrome.runtime.sendMessage({type:"MEMO_DATA_READ",keys}),
-        new Promise((_,reject) => { timer = setTimeout(() => reject(new Error("读取等待超时，请点击“重试读取”。")), 30000); })
+      return await Promise.race([
+        chrome.runtime.sendMessage(message),
+        new Promise((_,reject) => { timer = setTimeout(() => reject(new Error(timeoutMessage)), 30000); })
       ]);
     } finally { clearTimeout(timer); }
+  }
+  async function memoGet(keys) {
+    const result = await memoMessage({type:"MEMO_DATA_READ",keys},"读取等待超时，请点击“重试读取”。");
     if (!result?.ok) throw new Error(result?.error || "D 盘数据读取失败，请更新本地助手。");
     return result.values;
   }
   async function memoSet(values) {
-    const result = await chrome.runtime.sendMessage({type:"MEMO_DATA_WRITE",values});
+    const result = await memoMessage({type:"MEMO_DATA_WRITE",values},"保存等待超时，请重试。");
     if (!result?.ok) throw new Error(result?.error || "D 盘保存失败。");
   }
   function mapTree(items, changes, rename) {
@@ -327,14 +330,42 @@
     window.addEventListener("pagehide", () => { cancelDrop(); cancelDragOut(); });
     renderFiles();
   }
-  function save() {
+  async function saveNote(text) {
+    let result;
+    try {
+      result = await memoMessage({type:"MEMO_DATA_WRITE",values:{[storageKey]:text}},"保存等待超时。");
+    } catch {
+      // 扩展消息中断时，文件可能已经写入。下方读回核对再更新状态。
+    }
+    if (result?.ok) return;
+    if (result && !result.unconfirmed) throw new Error(result.error || "D 盘保存失败。");
+    try {
+      const saved = await memoGet([storageKey]);
+      if (saved[storageKey] === text) return;
+    } catch {}
+    throw new Error("无法确认是否已写入 D 盘。请保留当前文字，再点击“保存”重试。");
+  }
+  async function save() {
     if (!initialized) return;
-    const text = textarea.value; statusEl.textContent = "正在保存…";
-    saveQueue = saveQueue.catch(() => {}).then(async () => {
-      await memoSet({ [storageKey]: text });
-      if (textarea.value === text) statusEl.textContent = "已保存到 D 盘";
-    }).catch(error => { statusEl.textContent = "保存失败：" + error.message; });
-    return saveQueue;
+    saveRequested = true;
+    if (saving) return;
+    saving = true;
+    try {
+      while (saveRequested) {
+        saveRequested = false;
+        const text = textarea.value;
+        statusEl.textContent = "正在保存…";
+        try {
+          await saveNote(text);
+          if (textarea.value === text) {
+            saveRequested = false;
+            statusEl.textContent = "已保存到 D 盘";
+          }
+        } catch (error) {
+          if (!saveRequested) statusEl.textContent = "保存失败：" + error.message;
+        }
+      }
+    } finally { saving = false; }
   }
   async function open() {
     if (!panel) buildPanel();

@@ -21,19 +21,20 @@
         if (port) { try { port.disconnect(); } catch {} }
         resolve(result);
       }
-      timer = setTimeout(() => finish({ok:false,error:"本地数据请求超过 20 秒未完成，请点击“重试读取”。"}), 20000);
+      timer = setTimeout(() => finish({ok:false,unconfirmed:true,error:"本地助手超过 20 秒未返回结果。"}), 20000);
       try {
         port = chrome.runtime.connectNative(HOST);
         port.onMessage.addListener(finish);
         port.onDisconnect.addListener(() => {
           const error = chrome.runtime.lastError;
-          finish({ok:false,error:error?.message || "本地助手未返回数据，请重试读取。"});
+          finish({ok:false,unconfirmed:true,error:error?.message || "本地助手连接中断。"});
         });
         port.postMessage(message);
       } catch (error) { finish({ok:false,error:error.message || "本地助手连接失败。"}); }
     });
   }
   let dataQueue = Promise.resolve();
+  let noteWriteQueue = Promise.resolve();
   function dataTask(task) {
     const result = dataQueue.catch(() => {}).then(task);
     dataQueue = result; return result;
@@ -120,8 +121,8 @@
       chrome.runtime.openOptionsPage().then(() => reply({ok:true}), () => reply({ok:false})); return true;
     }
     if (["MEMO_DATA_READ","MEMO_DATA_WRITE"].includes(message.type)) {
-      const task = async () => {
-        if (message.type === "MEMO_DATA_READ") {
+      if (message.type === "MEMO_DATA_READ") {
+        const read = async () => {
           if (!Array.isArray(message.keys) || message.keys.length > 2 || !message.keys.every(validKey)) throw new Error("存储键无效");
           // 普通页面只迁移所需记录，不等待其他网页或全库迁移。
           await migrate(message.keys.length ? message.keys : null);
@@ -129,17 +130,32 @@
           const values = {};
           for (const key of message.keys) { const r = await disk("get",{key}); if (r.exists) values[key] = r.value; }
           return {ok:true,values};
-        }
-        const pairs = Object.entries(message.values || {});
-        if (pairs.length !== 1 || !validKey(pairs[0][0])) throw new Error("存储内容无效");
-        await migrate(pairs.map(([key]) => key));
-        for (const [key,value] of pairs) await disk("set",{key,value});
-        // 通知失败不改变已经落盘的保存结果。
-        try { await notify(message.values); } catch {}
-        return {ok:true};
+        };
+        read().then(reply,error=>reply({ok:false,error:error.message})); return true;
+      }
+      const pairs = Object.entries(message.values || {});
+      if (pairs.length !== 1 || !validKey(pairs[0][0])) {
+        reply({ok:false,error:"存储内容无效"}); return;
+      }
+      const [key,value] = pairs[0];
+      const isAttachmentList = key.startsWith("wb_memo_attachments_");
+      const write = async () => {
+        await migrate([key]);
+        return nativeRequest({action:"memoData",op:"set",key,value});
       };
-      // 读取不排在其他标签页的保存/全库改名后面。写入和改名仍按顺序执行。
-      (message.type === "MEMO_DATA_READ" ? task() : dataTask(task)).then(reply,error=>reply({ok:false,error:error.message})); return true;
+      const writeError = error => reply({ok:false,error:error.message});
+      // 文字保存只等待 D 盘写入，不等待附件改名或标签页通知。
+      if (isAttachmentList) {
+        dataTask(async () => {
+          const response = await write();
+          reply(response);
+          if (response?.ok) await notify(message.values).catch(() => {});
+        }).catch(writeError);
+      } else {
+        noteWriteQueue = noteWriteQueue.catch(() => {}).then(write);
+        noteWriteQueue.then(reply,writeError);
+      }
+      return true;
     }
     if (message.type !== "MEMO_LOCAL_REQUEST") return;
     const action = message.action;
